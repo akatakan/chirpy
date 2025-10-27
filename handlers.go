@@ -57,10 +57,9 @@ func (c *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
-func (c *apiConfig) handlerChirpsValidate(w http.ResponseWriter, req *http.Request) {
+func (c *apiConfig) handlerChirps(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
-		Body    string    `json:"body"`
-		User_id uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 	decoder := json.NewDecoder(req.Body)
 	params := parameters{}
@@ -69,7 +68,16 @@ func (c *apiConfig) handlerChirpsValidate(w http.ResponseWriter, req *http.Reque
 		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters", err)
 		return
 	}
-
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "cant find token", err)
+		return
+	}
+	userId, err := auth.ValidateJWT(token, c.tokenSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "please log in", err)
+		return
+	}
 	const maxChirpLength = 140
 	if len(params.Body) > maxChirpLength {
 		respondWithError(w, http.StatusBadRequest, "Chirp is too long", nil)
@@ -78,10 +86,11 @@ func (c *apiConfig) handlerChirpsValidate(w http.ResponseWriter, req *http.Reque
 	createdChirp, err := c.db.CreateChirp(req.Context(), database.CreateChirpParams{
 		ID:     uuid.New(),
 		Body:   params.Body,
-		UserID: params.User_id,
+		UserID: userId,
 	})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create chirp", err)
+		return
 	}
 	res := returnVals{
 		Id:         createdChirp.ID,
@@ -175,33 +184,85 @@ func (c *apiConfig) loginHandler(w http.ResponseWriter, req *http.Request) {
 		Password string `json:"password"`
 	}
 	type userResponse struct {
-		Id         uuid.UUID `json:"id"`
-		Created_at time.Time `json:"created_at"`
-		Updated_at time.Time `json:"updated_at"`
-		Email      string    `json:"email"`
+		Id           uuid.UUID `json:"id"`
+		Created_at   time.Time `json:"created_at"`
+		Updated_at   time.Time `json:"updated_at"`
+		Email        string    `json:"email"`
+		Token        string    `json:"token"`
+		RefreshToken string    `json:"refresh_token"`
 	}
 	decoder := json.NewDecoder(req.Body)
 	var params parameters
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Request parameters are wrong", err)
+		return
 	}
+
 	existingUser, err := c.db.GetUserByEmail(req.Context(), params.Email)
 	if err != nil {
 		respondWithError(w, http.StatusNotFound, "Cant find user link to email", err)
+		return
 	}
 	valid, err := auth.CheckPasswordHash(params.Password, existingUser.HashedPassword)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Cant compare pass and hash", err)
+		return
 	}
 	if valid {
+		userToken, err := auth.MakeJWT(existingUser.ID, c.tokenSecret, time.Hour)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "cannot make jwt", err)
+			return
+		}
+		refreshToken, err := auth.MakeRefreshToken()
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "cannot make refresh token", err)
+			return
+		}
+		_, err = c.db.CreateRefreshToken(req.Context(), database.CreateRefreshTokenParams{
+			Token:     refreshToken,
+			UserID:    existingUser.ID,
+			ExpiresAt: time.Now().Add(time.Hour * 24 * 60),
+		})
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "cannot create refresh token", err)
+			return
+		}
+		w.Header().Set("Authorization", "Bearer "+userToken)
 		respondWithJSON(w, http.StatusOK, userResponse{
-			Id:         existingUser.ID,
-			Created_at: existingUser.CreatedAt,
-			Updated_at: existingUser.UpdatedAt,
-			Email:      existingUser.Email,
+			Id:           existingUser.ID,
+			Created_at:   existingUser.CreatedAt,
+			Updated_at:   existingUser.UpdatedAt,
+			Email:        existingUser.Email,
+			Token:        userToken,
+			RefreshToken: refreshToken,
 		})
 	} else {
 		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password", err)
+		return
 	}
+}
+
+func (c *apiConfig) refreshHandler(w http.ResponseWriter, req *http.Request) {
+	type returnVal struct {
+		Token string `json:"token"`
+	}
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "bad header request", err)
+		return
+	}
+	refresh_token, err := c.db.GetRefreshToken(req.Context(), token)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Cant found refresh token", err)
+		return
+	}
+	if time.Now().After(refresh_token.ExpiresAt) && !refresh_token.RevokedAt.Valid {
+		respondWithError(w, http.StatusUnauthorized, "token expired", err)
+		return
+	}
+	respondWithJSON(w, http.StatusOK, returnVal{
+		Token: refresh_token.Token,
+	})
 }
