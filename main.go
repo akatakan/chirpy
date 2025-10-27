@@ -17,6 +17,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	tokenSecret    string
+	polkaKey       string
 }
 
 func main() {
@@ -36,6 +37,7 @@ func main() {
 		db:             dbQueries,
 		platform:       os.Getenv("PLATFORM"),
 		tokenSecret:    tokenSecret,
+		polkaKey:       os.Getenv("POLKA_KEY"),
 	}
 	mux.HandleFunc("GET /api/healthz", healthHandler)
 	mux.HandleFunc("GET /admin/metrics", cfg.metricHandler)
@@ -44,8 +46,12 @@ func main() {
 	mux.HandleFunc("GET /api/chirps/{id}", cfg.GetChirpById)
 	mux.HandleFunc("POST /api/chirps", cfg.handlerChirps)
 	mux.HandleFunc("POST /api/users", cfg.registerHandler)
-	mux.HandleFunc("POST /api/login", cfg.loginHandler)
+	mux.HandleFunc("POST /api/login", cfg.handlerLogin)
 	mux.HandleFunc("POST /api/refresh", cfg.refreshHandler)
+	mux.HandleFunc("POST /api/revoke", cfg.handlerRevoke)
+	mux.HandleFunc("PUT /api/users", cfg.updateUser)
+	mux.HandleFunc("DELETE /api/chirps/{id}", cfg.deleteChirpHandler)
+	mux.HandleFunc("POST /api/polka/webhooks", cfg.userUpgradeWebhook)
 	handler := http.StripPrefix("/app", cfg.middlewareMetricsInc(http.FileServer(http.Dir(filePath))))
 	mux.Handle("/app/", handler)
 	srv := &http.Server{

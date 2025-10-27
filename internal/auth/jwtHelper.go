@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -49,24 +50,39 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 }
 
 func GetBearerToken(headers http.Header) (string, error) {
-	bearer := headers.Get("Authorization")
-	if bearer == "" {
-		return "", fmt.Errorf("bearer token not found")
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("missing authorization header")
 	}
-	tokenInfo := strings.Fields(bearer)
-	if len(tokenInfo) != 2 {
-		return "", fmt.Errorf("wrong header")
+
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		return "", errors.New("malformed authorization header")
 	}
-	token := tokenInfo[1]
-	return token, nil
+
+	return parts[1], nil
 }
 
-func MakeRefreshToken() (string, error) {
+func MakeRefreshToken() string {
 	key := make([]byte, 32)
 	_, err := rand.Read(key)
 	if err != nil {
-		return "", err
+		return ""
 	}
 	hexStr := hex.EncodeToString(key)
-	return hexStr, nil
+	return hexStr
+}
+
+func GetAPIKey(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("missing authorization header")
+	}
+
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "apikey" {
+		return "", errors.New("malformed authorization header")
+	}
+
+	return parts[1], nil
 }
